@@ -54,52 +54,62 @@ class DQN(pl.LightningModule):
         # model architecture
         # for image based environments, use a convolutional feature extractor
         if len(self.input_dim) == 3:
-            channels = self.input_dim[2]
-            pixels = self.input_dim[0] * self.input_dim[1]
-
-            self.q_model = nn.Sequential(\
-                    nn.Conv2d(channels, channels*3, \
-                        kernel_size=3,\
-                        stride=2,\
-                        padding=1,\
-                        padding_mode="circular"),\
-                    nn.Conv2d(channels*3, channels*3, \
-                        kernel_size=3,\
-                        stride=2,\
-                        padding=1,\
-                        padding_mode="circular"),\
-                    nn.Conv2d(channels*3, channels, \
-                        kernel_size=3,\
-                        stride=2,\
-                        padding=1,\
-                        padding_mode="circular"),\
-                    nn.ReLU(),
-                    nn.Flatten())
-
-            self.q_target = nn.Sequential(\
-                    nn.Conv2d(channels, channels*3, \
-                        kernel_size=3,\
-                        stride=2,\
-                        padding=1,\
-                        padding_mode="circular"),\
-                    nn.Conv2d(channels*3, channels*3, \
-                        kernel_size=3,\
-                        stride=2,\
-                        padding=1,\
-                        padding_mode="circular"),\
-                    nn.Conv2d(channels*3, channels, \
-                        kernel_size=3,\
-                        stride=2,\
-                        padding=1,\
-                        padding_mode="circular"),\
-                    nn.ReLU(),
-                    nn.Flatten())
-
-            self.hidden =  channels * (pixels // 8**2)
+            self.build_conv_policy()
 
         else:
-            self.q_model = nn.Sequential(nn.Linear(self.input_dim[0], self.hidden[0]), nn.ReLU())
-            self.q_target = nn.Sequential(nn.Linear(self.input_dim[0], self.hidden[0]), nn.ReLU())
+            self.build_mlp_policy()
+
+        # q_target is periodically updated by the current q_model
+        self.update_q_target()
+
+        # keep track of epochs
+        self.epoch = 0
+        self.update_every = 50
+
+    def build_conv_policy(self):
+
+        channels = self.input_dim[2]
+        pixels = self.input_dim[0] * self.input_dim[1]
+
+        self.q_model = nn.Sequential(\
+                nn.Conv2d(channels, channels*3, \
+                    kernel_size=3,\
+                    stride=2,\
+                    padding=1,\
+                    padding_mode="circular"),\
+                nn.Conv2d(channels*3, channels*3, \
+                    kernel_size=3,\
+                    stride=2,\
+                    padding=1,\
+                    padding_mode="circular"),\
+                nn.Conv2d(channels*3, channels, \
+                    kernel_size=3,\
+                    stride=2,\
+                    padding=1,\
+                    padding_mode="circular"),\
+                nn.ReLU(),
+                nn.Flatten())
+
+        self.q_target = nn.Sequential(\
+                nn.Conv2d(channels, channels*3, \
+                    kernel_size=3,\
+                    stride=2,\
+                    padding=1,\
+                    padding_mode="circular"),\
+                nn.Conv2d(channels*3, channels*3, \
+                    kernel_size=3,\
+                    stride=2,\
+                    padding=1,\
+                    padding_mode="circular"),\
+                nn.Conv2d(channels*3, channels, \
+                    kernel_size=3,\
+                    stride=2,\
+                    padding=1,\
+                    padding_mode="circular"),\
+                nn.ReLU(),
+                nn.Flatten())
+
+        self.hidden =  channels * (pixels // 8**2)
 
         if type(self.hidden) != list:
             self.hidden = [self.hidden]
@@ -117,13 +127,26 @@ class DQN(pl.LightningModule):
             self.q_target.add_module(f"layer_{index}",\
                     nn.Linear(self.hidden[index], hidden_nodes))
 
+    def build_mlp_policy(self):
 
-        # q_target is periodically updated by the current q_model
-        self.update_q_target()
+        self.q_model = nn.Sequential(nn.Linear(self.input_dim[0], self.hidden[0]), nn.ReLU())
+        self.q_target = nn.Sequential(nn.Linear(self.input_dim[0], self.hidden[0]), nn.ReLU())
 
-        # keep track of epochs
-        self.epoch = 0
-        self.update_every = 50
+        if type(self.hidden) != list:
+            self.hidden = [self.hidden]
+
+        self.hidden += [self.action]
+
+        for index, hidden_nodes in enumerate(self.hidden[1:]):
+
+            if index == len(self.hidden)-1:
+                break
+
+            self.q_model.add_module(f"layer_{index}",\
+                    nn.Linear(self.hidden[index], hidden_nodes))
+
+            self.q_target.add_module(f"layer_{index}",\
+                    nn.Linear(self.hidden[index], hidden_nodes))
         
     def update_q_target(self):
 
@@ -162,7 +185,7 @@ class DQN(pl.LightningModule):
                 qt_max = torch.gather(q_target_value, -1,\
                         torch.argmax(q_model_output, dim=-1).unsqueeze(-1))
             else:
-                qt_max = torch.gather(qt, -1, \
+                qt_max = torch.gather(q_target_value, -1, \
                         torch.argmax(qt, dim=-1).unsqueeze(-1))
 
             # add to reward the q_target value for the next step (x discount gamma)
