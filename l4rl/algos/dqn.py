@@ -351,6 +351,7 @@ if __name__ == "__main__":
             default=100,\
             help="number of rollouts to roll out")
     parser.add_argument("-s", "--seed", type=int,\
+            default=42,\
             help="random seed")
     parser.add_argument("-t", "--tag", type=str,\
             default="default_exp",\
