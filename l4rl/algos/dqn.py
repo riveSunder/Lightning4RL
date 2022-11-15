@@ -29,7 +29,7 @@ class DQN(pl.LightningModule):
         super().__init__()
 
         # learning parameters
-        self.lr = 3e-6
+        self.lr = get_kwarg("lr", 3e-6, **kwargs)
         # use double dqn?
         self.use_double = True
 
@@ -194,20 +194,6 @@ class DQN(pl.LightningModule):
             
         return loss
 
-    def validation_step(self, batch, batch_idx):
-
-        with torch.no_grad():
-
-            self.optimizer.zero_grad()
-            
-            loss = self.compute_q_loss(batch)
-
-            # RL, where you're still allowed to
-            # validate on the training set ;)
-            self.log("val_loss", loss)
-
-        return loss
-
     def get_rollout(self, env, max_steps=10000, my_device="cuda"):
 
         # get trajectories for training
@@ -347,56 +333,93 @@ def enjoy(agent, env, total_steps=100, render=True):
 
 if __name__ == "__main__":
 
-    batch_size = 100
-    exp_tag = f"temp_model{int(time.time()}"
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("-b", "--batch_size", type=int, \
+            default=1000,\
+            help="number of steps to include in each training step batch")
+    parser.add_argument("-e", "--epochs", type=int, \
+            default=10,\
+            help="epochs to train on each rollout")
+    parser.add_argument("-l", "--learning_rate", type=float , \
+            default=3e-6,\
+            help="learning rate")
+    parser.add_argument("-m", "--max_steps", type=int, \
+            default=10000,\
+            help="total number of steps per rollout")
+    parser.add_argument("-r", "--rollouts", type=int, \
+            default=100,\
+            help="number of rollouts to roll out")
+    parser.add_argument("-s", "--seed", type=int,\
+            help="random seed")
+    parser.add_argument("-t", "--tag", type=str,\
+            default="default_exp",\
+            help="tag to identify experiment run")
+    parser.add_argument("-z", "--ez_mode", type=int, \
+            default=0,\
+            help="train in easy mode (CartPole env) unless ez_mode is 0")
+
+    args = parser.parse_args()
+
+    batch_size = args.batch_size
+    ez = args.ez_mode
+    exp_tag = f"{args.tag}_{int(time.time())}"
+    rollouts = args.rollouts
+    max_steps = args.max_steps
+    max_epochs = args.epochs
+    lr = args.learning_rate
+    my_seed = args.seed
+
+    np.random.seed(my_seed)
+    torch.manual_seed(my_seed)
+
     # bigfish, starpilot, fruitbot, climber
-    ez = 0
     if not ez:
         env_name = "procgen:procgen-chaser-v0"
         env = gym.make(env_name, distribution_mode="easy", start_level=0, num_levels=1)
     else:
         env_name = "CartPole-v1"
         env = gym.make(env_name)
+
     input_dim = env.observation_space.shape
     action_dim = env.action_space.n
 
+    dqn = DQN(input_dim=input_dim, action=action_dim, lr=lr)
 
-    dqn = DQN(input_dim=input_dim, action=action_dim)
-
-    # before training
+    # before training (basically a random agent)
     enjoy(dqn, env, render=False, total_steps=5000)
 
-    max_generations = 5000
     try:
-        for gen in range(max_generations):
+        for gen in range(rollouts):
             if ez:
                 env = gym.make(env_name) #, distribution_mode="easy", start_level=0, num_levels=1)
             else:
                 env = gym.make(env_name, distribution_mode="easy", start_level=0, num_levels=1)
             t0  = time.time()
-            rollout = dqn.get_rollout(env, max_steps=5000)
+            rollout = dqn.get_rollout(env, max_steps=max_steps)
             t1 = time.time()
+
             print(f"rollout time {t1-t0:.3f}")
             print(f"gen {gen} mean reward: {np.mean(rollout[2].cpu().numpy())}"
                     f", mean steps/epd: {1/np.mean(rollout[4].cpu().numpy())}")
 
             trajectory = Trajectory(rollout)
 
-            batch_size = 1000
             idx = np.random.choice(len(trajectory), batch_size, replace=False)
 
             temp = trajectory[idx]
 
             dataloader = DataLoader(trajectory, batch_size=batch_size, num_workers=16)
+
             if torch.cuda.is_available():
-                trainer = pl.Trainer(accelerator="gpu", max_epochs=5)
+                trainer = pl.Trainer(accelerator="gpu", max_epochs=max_epochs)
             else:
                 trainer = pl.Trainer(max_epochs=5)
 
             trainer.fit(model=dqn, train_dataloaders=dataloader)
             enjoy(dqn, env, render=False, total_steps=250)
 
-            torch.save(model.state_dict(), f"logs/{exp_tag}.pt")
+            torch.save(dqn.state_dict(), f"models/{exp_tag}.pt")
 
     except KeyboardInterrupt:
         import pdb; pdb.set_trace()
@@ -405,5 +428,5 @@ if __name__ == "__main__":
         env = gym.make(env_name) #, distribution_mode="easy", start_level=0, num_levels=1)
     else:
         env = gym.make(env_name, render_mode="human", distribution_mode="easy", start_level=0, num_levels=1)
-    enjoy(dqn, env, render=True)
+
     enjoy(dqn, env, render=True)
